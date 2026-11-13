@@ -5344,8 +5344,21 @@ function showLiveBadge(isoDate){
 
 /* ── Load live data from GitHub on page open (viewer mode) ── */
 /* Hardcoded public URL so ALL viewers auto-load data, not just admin */
-const GITHUB_USER = 'excellent5647';
-const GITHUB_REPO = 'FRUTTA-SECONDARY-SALES-DASHBOARD-';
+/* Read from the SAME repo this page is hosted on (e.g. user.github.io/REPO/),
+   so viewers always load what the admin just published. Falls back to the
+   admin's ⚙️ Setup repo, then to the original repo. */
+const GITHUB_USER = (function(){
+  var h = location.hostname;
+  if(/\.github\.io$/i.test(h)) return h.split('.')[0];
+  var c = ghCfg(); return c.user || 'sandra-theprojectmanager';
+})();
+const GITHUB_REPO = (function(){
+  if(/\.github\.io$/i.test(location.hostname)){
+    var seg = location.pathname.split('/').filter(Boolean)[0];
+    if(seg) return seg;
+  }
+  var c = ghCfg(); return c.repo || 'FRUTTA-SECONDARY-SALES-DASHBOARD';
+})();
 
 /* Repair confirmed DB assignments in already-published data. The Excel parser
    applies the same correction, but live JSON bypasses parseWB entirely. */
