@@ -3023,6 +3023,37 @@ function fReps(rgn, includeManagers){
     .map(([code,r])=>({code,...r}))
     .sort((a,b)=>b.revenue-a.revenue);
 }
+
+/* ═══════════ NORTH EXCLUSION ═══════════
+   North sales are keyed in weekly (manual sellout), not captured daily by the
+   field team. North counts ONLY in the Overview's Total Revenue and Total Cases.
+   Every other metric (run rate, projection, best day, daily/weekly trends,
+   conversion, reps, outlets, region health, intelligence) is for the other teams. */
+const EXN = 'NORTH';
+const REGIONS_EXN = REGIONS.filter(function(r){ return r!==EXN; });
+const _exnCache = new WeakMap();
+function _exn(){
+  if(!D) return {daily:{}, overall:{}, tgtCases:0, tgtRev:0};
+  let c=_exnCache.get(D); if(c) return c;
+  const nd=(D.daily&&D.daily[EXN])||{}, daily={};
+  Object.keys(D.dailyAll||{}).forEach(function(d){ const v=(D.dailyAll[d]||0)-(nd[d]||0); daily[d]=v>0.5?v:0; });
+  const ov=D.overall||{}, nr=(D.regions&&D.regions[EXN])||{};
+  const overall=Object.assign({}, ov, {
+    revenue: (ov.revenue||0)-(nr.revenue||0),
+    cases:   (ov.cases||0)-(nr.cases||0),
+    att:     Math.max(0,(ov.att||0)-(nr.attCount||0)),
+    met:     Math.max(0,(ov.met||0)-(nr.metCount||0)),
+    sold:    Math.max(0,(ov.sold||0)-(nr.soldCount||0)),
+  });
+  const T=D.targets||{};
+  const tgtCases=(T.totalTargetCases||0)-((T.regTargets&&T.regTargets[EXN])||0);
+  const tgtRev  =(T.totalTargetRev||0)-((T.regRevTargets&&T.regRevTargets[EXN])||0);
+  c={daily, overall, tgtCases, tgtRev}; _exnCache.set(D,c); return c;
+}
+function dailyExN(){ return _exn().daily; }
+function ovExN(){ return _exn().overall; }
+function tgtExN(){ const c=_exn(); return Object.assign({}, D.targets||{}, {totalTargetCases:c.tgtCases, totalTargetRev:c.tgtRev}); }
+function repsExN(){ return Object.values(D.reps).filter(function(r){ return r.region!==EXN; }); }
 function fRegion(rgn){
   if(!activeASM) return D.regions[rgn];
   // For ASM-filtered region totals: include ALL reps under this ASM in this
@@ -3057,23 +3088,31 @@ function fRegion(rgn){
 function fOverall(){
   const T = D.targets || {};
   if(!activeASM){
-    return Object.assign({}, D.overall, {
-      targetCases: T.totalTargetCases || 0,
-      targetRev:   T.totalTargetRev   || 0,
+    const X=_exn();
+    return Object.assign({}, X.overall, {
+      targetCases: X.tgtCases || 0,
+      targetRev:   X.tgtRev   || 0,
+      // Incl. North — used ONLY by the Overview Total Revenue / Total Cases cards
+      revenueAll:     (D.overall||{}).revenue || 0,
+      casesAll:       (D.overall||{}).cases   || 0,
+      targetCasesAll: T.totalTargetCases || 0,
+      targetRevAll:   T.totalTargetRev   || 0,
     });
   }
   // For ASM-filtered totals: include ALL reps assigned to this ASM, including
   // vacant positions — their work (revenue, outlets, customers) is real and
   // belongs in the ASM's territory totals. Vacant accounts are still excluded
   // from per-rep displays via fReps, but their aggregated work counts here.
-  const repsForWork = Object.values(D.reps).filter(function(r){
+  const repsAllForWork = Object.values(D.reps).filter(function(r){
     return !r.isManager && r.asm === activeASM;
   });
+  const repsForWork = repsAllForWork.filter(function(r){ return r.region!==EXN; });
   // For counts of "real working positions" (active rep count, target sum),
   // vacant accounts are excluded — no person assigned to hit a target.
-  const allRepsInASM = Object.values(D.reps).filter(function(r){
+  const allRepsInASMAll = Object.values(D.reps).filter(function(r){
     return !r.isManager && !r.isVacant && r.asm === activeASM;
   });
+  const allRepsInASM = allRepsInASMAll.filter(function(r){ return r.region!==EXN; });
   const metSet=new Set(), soldSet=new Set();
   repsForWork.forEach(function(r){
     if(r.outlets instanceof Set) r.outlets.forEach(function(c){metSet.add(c);});
@@ -3093,6 +3132,10 @@ function fOverall(){
     met, sold,
     targetCases: asmTargetCases,
     targetRev:   asmTargetRev,
+    revenueAll:     repsAllForWork.reduce(function(s,r){return s+r.revenue;},0),
+    casesAll:       repsAllForWork.reduce(function(s,r){return s+r.cases;},0),
+    targetCasesAll: allRepsInASMAll.reduce(function(s,r){return s+(r.targetCases||0);},0),
+    targetRevAll:   T.blendedPrice ? Math.round(allRepsInASMAll.reduce(function(s,r){return s+(r.targetCases||0);},0) * T.blendedPrice) : 0,
   };
 }
 function asmBadge(el){
@@ -3287,7 +3330,7 @@ function workWeeksForMonth(ym){
 
 /* Shared week-on-week revenue-by-region builder, used by both the GMD and Intelligence views. */
 function buildWeeklyRevenueData(){
-  const dates = Object.keys((D&&D.dailyAll)||{}).sort();
+  const dates = Object.keys((D&&dailyExN())||{}).sort();
   const I2    = (D&&D.intel)||{};
   const wowYM = I2.dominantYM || (dates[0]||'').slice(0,7);
   const wowWeeks = workWeeksForMonth(wowYM);
@@ -3304,7 +3347,7 @@ function buildWeeklyRevenueData(){
       return Math.round(sum);
     });
   }
-  const wowSeries = REGIONS.map(r=>({label:r==='Key Acct'?'KEY ACCT':r, data:weeklyRevByRegion(r), color:RC[r]}));
+  const wowSeries = REGIONS_EXN.map(r=>({label:r==='Key Acct'?'KEY ACCT':r, data:weeklyRevByRegion(r), color:RC[r]}));
   return {wowYM, wowWeeks, wowLabels, wowSeries};
 }
 
@@ -3466,7 +3509,7 @@ function renderOV(){try{
   const dates=Object.keys(D.dailyAll).sort();
   if(dates.length) document.getElementById('ov-period').textContent=dates[0]+' → '+dates[dates.length-1];
   // Overall compliance = average across non-manager reps only
-  const allReps = Object.values(D.reps).filter(r=>!r.isManager && !r.isVacant);
+  const allReps = repsExN().filter(r=>!r.isManager && !r.isVacant);
   const overallCompliance = allReps.length>0 ? allReps.reduce((s,r)=>s+(r.compliance||0),0)/allReps.length : 0;
   const compliantTotal = allReps.filter(r=>(r.compliance||0)>=100).length;
 
@@ -3477,8 +3520,8 @@ function renderOV(){try{
 
   // Productive reps: filter by ASM if active
   const allActiveReps = activeASM
-    ? Object.values(D.reps).filter(r=>!r.isManager && !r.isVacant && r.asm===activeASM)
-    : Object.values(D.reps).filter(r=>!r.isManager && !r.isVacant);
+    ? repsExN().filter(r=>!r.isManager && !r.isVacant && r.asm===activeASM)
+    : repsExN().filter(r=>!r.isManager && !r.isVacant);
   const productiveReps = allActiveReps.filter(r=>r.revenue>0).length;
 
   const _ovI = D.intel||{}, _ovDg = _ovI.workDaysGone||1, _ovDm = _ovI.workDaysInMonth||22;
@@ -3491,8 +3534,23 @@ function renderOV(){try{
   // appear in per-rep displays. Their work happened and matters for regional totals.
   const _ovActual  = o.met || 0;
   document.getElementById('ov-kpis').innerHTML=
-    tgtCard('Total MTD Revenue', o.revenue, totalTargetRev, {valCls:'c-g', sub: activeASM ? activeASM : 'All Regions'})
-   +tgtCard('Total Cases Sold',  o.cases,   totalTargetCases, {valCls:'', sub:'Units', isCases:true})
+    tgtCard('Total MTD Revenue', o.revenueAll, o.targetRevAll||0, {valCls:'c-g', sub: activeASM ? activeASM+' · incl. North' : 'All Regions · incl. North'})
+   +tgtCard('Total Cases Sold',  o.casesAll,   o.targetCasesAll||0, {valCls:'', sub:'Units · incl. North', isCases:true})
+   +(function(){
+       // Same logic as the region tabs: (cases target − MTD cases) ÷ working days left.
+       // Excludes North — its sellout is keyed in weekly and it has no daily field target.
+       const tc=o.targetCases||0; if(!(tc>0)) return '';
+       const dm=_ovI.workDaysInMonth||25, dg=Math.max(Math.min(_ovI.workDaysGone||1,dm),1);
+       const dl=Math.max(_ovI.workDaysLeft!=null?_ovI.workDaysLeft:dm-dg,0), div=Math.max(dl,1);
+       const price=T.blendedPrice||0;
+       const left=Math.max(tc-(o.cases||0),0), need=left/div, cur=(o.cases||0)/dg;
+       const c=left<=0?'var(--grn)':cur>=need?'var(--grn)':cur>=need*0.6?'var(--amb)':'var(--red)';
+       const nReps=allActiveReps.filter(function(x){return (x.targetCases||0)>0;}).length||1;
+       return '<div class="kc"><div class="kc-lbl">Cases Needed / Day</div><div class="kc-val" style="color:'+c+'">'+(left<=0?'✓ Hit':fn(Math.ceil(need)))+'</div>'
+         +'<div class="kc-sub">'+fn(Math.ceil(need/nReps))+' per rep · now '+fn(Math.round(cur))+'/day · '+dl+' days left · excl. North</div></div>'
+         +'<div class="kc"><div class="kc-lbl">Revenue Needed / Day</div><div class="kc-val" style="color:'+c+'">'+(left<=0?'✓ Hit':fm(Math.round(need*price)))+'</div>'
+         +'<div class="kc-sub">'+fm(Math.round(left*price))+' left to sell · excl. North</div></div>';
+     })()
    +tgtCard('Outlets Visited', _ovActual, _ovTeamTgt, {valCls:'c-b', isCases:true, sub:'Day '+_ovDg+' pace · 220/rep (120 for KA)'})
    +`<div class="kc"><div class="kc-lbl">Active Reps</div><div class="kc-val">${o.att}</div><div class="kc-sub">Checked in (incl. zero-rev)</div></div>`
    +`<div class="kc"><div class="kc-lbl">Productive Reps</div><div class="kc-val c-g">${productiveReps}</div><div class="kc-sub">Reps with revenue > ₦0</div></div>`
@@ -3568,9 +3626,10 @@ function renderOV(){try{
   setTimeout(()=>{
     barCh('c-ov-rev',rL,rdL.map(r=>r.revenue),rL.map(r=>RC[r]));
     barCh('c-ov-cas',rL,rdL.map(r=>r.cases),rL.map(r=>RC[r]));
-    barCh('c-ov-att',REGIONS,rdA.map(r=>r.attCount),REGIONS.map(r=>RC[r]));
-    barCh('c-ov-con',REGIONS,rdA.map(r=>r.conv),REGIONS.map(r=>RC[r]));
-    barCh('c-ov-cmp',REGIONS,rdA.map(r=>r.compliance||0),REGIONS.map(r=>RC[r]));
+    { const rdX=REGIONS_EXN.map(r=>fRegion(r)), cX=REGIONS_EXN.map(r=>RC[r]);
+    barCh('c-ov-att',REGIONS_EXN,rdX.map(r=>r.attCount),cX);
+    barCh('c-ov-con',REGIONS_EXN,rdX.map(r=>r.conv),cX);
+    barCh('c-ov-cmp',REGIONS_EXN,rdX.map(r=>r.compliance||0),cX); }
     // Revenue share doughnut — fills the previously empty slot
     const totalRevAll = rdA.reduce((s,r)=>s+r.revenue,0)||1;
     doughnutCh('c-ov-share', REGIONS, rdA.map(r=>r.revenue), REGIONS.map(r=>RC[r]));
@@ -3780,8 +3839,8 @@ function renderGMD(){try{
   document.getElementById('gmd-body').style.display='';
   asmBadge(document.getElementById('gmd-asm'));
   const o=fOverall();
-  const rdMap={}; REGIONS.forEach(r=>rdMap[r]=fRegion(r));
-  const topR=REGIONS.reduce((b,r)=>rdMap[r].revenue>rdMap[b].revenue?r:b,REGIONS[0]);
+  const rdMap={}; REGIONS_EXN.forEach(r=>rdMap[r]=fRegion(r));
+  const topR=REGIONS_EXN.reduce((b,r)=>rdMap[r].revenue>rdMap[b].revenue?r:b,REGIONS_EXN[0]);
   document.getElementById('gmd-hl').textContent=`${topR} leads with ${fm(rdMap[topR].revenue)} MTD`;
   document.getElementById('gmd-sub').textContent=`${o.att} reps active · ${fn(o.sold)} customers served · Conv: ${fp(o.met>0?o.sold/o.met*100:0)}`;
 
@@ -3790,14 +3849,14 @@ function renderGMD(){try{
   const daysGone=I.workDaysGone||1, daysTotal=I.workDaysInMonth||23, daysInMth=I.daysInMonth||28;
   const wDaysElapsed=Math.min(daysGone,daysTotal);
   const dailyRun=o.revenue/Math.max(wDaysElapsed,1);
-  const projected=Math.round(dailyRun*daysInMth);
+  const projected=Math.round(dailyRun*daysTotal);  // run rate is per WORKING day → multiply by working days, not calendar days
   const overallDropSize=o.sold>0?(o.cases/o.sold).toFixed(1)+' cs':'—';
-  const TG = D.targets || {};
+  const TG = tgtExN();
   const T = TG; // alias used by RAG block
   const wDaysInMonth = daysTotal;
   const gmdTargetRev   = o.targetRev   || 0;
   const gmdTargetCases = o.targetCases || 0;
-  const _gmdActiveReps = Object.values(D.reps).filter(r=>!r.isManager && !r.isVacant && (activeASM?r.asm===activeASM:true));
+  const _gmdActiveReps = repsExN().filter(r=>!r.isManager && !r.isVacant && (activeASM?r.asm===activeASM:true));
   // Team target = active reps × monthly target (220 regular, 120 KA) — no proration.
   // Vacant accounts excluded — no person to hit a target.
   const _gmdTeamTgt = _gmdActiveReps.reduce(function(s,r){ return s + repOutletTarget(r.region, r.code); }, 0);
@@ -3806,11 +3865,11 @@ function renderGMD(){try{
   const _gmdOvAct   = o.met || 0;
   document.getElementById('gmd-kpis').innerHTML=
     tgtCard('MTD Total Revenue',   o.revenue,        gmdTargetRev,   {valCls:'c-a', cls:'a', sub:'All regions combined'})
-   +tgtCard('Projected Month-End', projected,        gmdTargetRev,   {valCls:'c-g', sub:'Run rate × '+daysInMth+' days'})
+   +tgtCard('Projected Month-End', projected,        gmdTargetRev,   {valCls:'c-g', sub:'Run rate × '+daysTotal+' working days'})
    +tgtCard('Total Cases',         o.cases,          gmdTargetCases, {valCls:'', sub:'Units sold MTD', isCases:true})
    +tgtCard('Outlets Visited', _gmdOvAct, _gmdTeamTgt, {valCls:'c-b', isCases:true, sub:'Day '+wDaysElapsed+' pace · 220/rep (120 for KA)'})
    +`<div class="kc b"><div class="kc-lbl">Active Reps</div><div class="kc-val c-b">${o.att}</div><div class="kc-sub">Checked in (incl. zero-rev)</div></div>`
-   +`<div class="kc"><div class="kc-lbl">Productive Reps</div><div class="kc-val c-g">${Object.values(D.reps).filter(r=>r.revenue>0 && !r.isManager && !r.isVacant).length}</div><div class="kc-sub">Reps with revenue > ₦0</div></div>`
+   +`<div class="kc"><div class="kc-lbl">Productive Reps</div><div class="kc-val c-g">${repsExN().filter(r=>r.revenue>0 && !r.isManager && !r.isVacant).length}</div><div class="kc-sub">Reps with revenue > ₦0</div></div>`
    +`<div class="kc"><div class="kc-lbl">Customers Sold</div><div class="kc-val c-g">${fn(o.sold)}</div><div class="kc-sub">Unique MTD</div></div>`
    +`<div class="kc p"><div class="kc-lbl">Conv. Rate</div><div class="kc-val c-p">${fp(o.met>0?o.sold/o.met*100:0)}</div><div class="kc-sub">Sold ÷ Outlets visited</div></div>`
    +`<div class="kc p"><div class="kc-lbl">Drop Size</div><div class="kc-val c-p">${overallDropSize}</div><div class="kc-sub">Avg cases per customer</div></div>`
@@ -3818,12 +3877,12 @@ function renderGMD(){try{
 
   /* ── MOMENTUM CARD ── */
   // Split daily revenue into first-half and second-half of working days to detect acceleration
-  const allDates = Object.keys(D.dailyAll).sort();
+  const allDates = Object.keys(dailyExN()).sort();
   const midpoint = Math.floor(allDates.length / 2);
   const firstHalf  = allDates.slice(0, midpoint);
   const secondHalf = allDates.slice(midpoint);
-  const firstHalfRev  = firstHalf.reduce((s,d)=>s+(D.dailyAll[d]||0), 0);
-  const secondHalfRev = secondHalf.reduce((s,d)=>s+(D.dailyAll[d]||0), 0);
+  const firstHalfRev  = firstHalf.reduce((s,d)=>s+(dailyExN()[d]||0), 0);
+  const secondHalfRev = secondHalf.reduce((s,d)=>s+(dailyExN()[d]||0), 0);
   const firstHalfAvg  = firstHalf.length  ? firstHalfRev  / firstHalf.length  : 0;
   const secondHalfAvg = secondHalf.length ? secondHalfRev / secondHalf.length : 0;
   // Momentum: % change from first half avg to second half avg
@@ -3834,11 +3893,11 @@ function renderGMD(){try{
   const momentumIcon  = isAccel ? '↑' : isFlat ? '→' : '↓';
   const momentumWord  = isAccel ? 'ACCELERATING' : isFlat ? 'STEADY' : 'DECELERATING';
   // Best and worst single days
-  const dayEntries = allDates.map(d=>({d, v:D.dailyAll[d]||0})).filter(e=>e.v>0);
+  const dayEntries = allDates.map(d=>({d, v:dailyExN()[d]||0})).filter(e=>e.v>0);
   const bestDay  = dayEntries.reduce((b,e)=>e.v>b.v?e:b, dayEntries[0]||{d:'—',v:0});
   const worstDay = dayEntries.reduce((b,e)=>e.v<b.v?e:b, dayEntries[0]||{d:'—',v:0});
   // Last 3 days trend arrow — are the most recent days above or below the overall daily avg?
-  const last3 = allDates.slice(-3).map(d=>D.dailyAll[d]||0);
+  const last3 = allDates.slice(-3).map(d=>dailyExN()[d]||0);
   const last3Avg = last3.length ? last3.reduce((a,b)=>a+b,0)/last3.length : 0;
   const recentVsAvg = dailyRun > 0 ? ((last3Avg - dailyRun) / dailyRun) * 100 : 0;
   const recentColor = recentVsAvg >= 5 ? 'var(--grn)' : recentVsAvg >= -5 ? 'var(--amb)' : 'var(--red)';
@@ -3846,7 +3905,7 @@ function renderGMD(){try{
   // Revenue per rep per day — first half vs second half (only when we have att data)
   // We use overall att count as proxy since we don't have daily att splits
   const revPerRepDay = o.att > 0 ? Math.round(dailyRun / o.att) : 0;
-  const prodRepCount = Object.values(D.reps).filter(r=>r.revenue>0 && !r.isManager && !r.isVacant).length;
+  const prodRepCount = repsExN().filter(r=>r.revenue>0 && !r.isManager && !r.isVacant).length;
   const revPerProdRepDay = prodRepCount > 0 ? Math.round(dailyRun / prodRepCount) : 0;
 
   document.getElementById('gmd-pace').innerHTML=`
@@ -3881,7 +3940,7 @@ function renderGMD(){try{
         <div style="padding:18px 22px;border-right:1px solid var(--bdr)">
           <div style="font-family:var(--fm);font-size:9px;letter-spacing:2px;color:var(--dim);font-weight:700;text-transform:uppercase;margin-bottom:8px">Best Day</div>
           <div style="font-family:var(--fn);font-size:22px;font-weight:800;color:var(--grn)">${fm(bestDay.v)}</div>
-          <div style="font-family:var(--fm);font-size:10px;color:var(--dim);font-weight:700;margin-top:5px">${bestDay.d||'—'}</div>
+          <div style="font-family:var(--fm);font-size:10px;color:var(--dim);font-weight:700;margin-top:5px">${bestDay.d||'—'} · excl. North (weekly)</div>
         </div>
         <div style="padding:18px 22px">
           <div style="font-family:var(--fm);font-size:9px;letter-spacing:2px;color:var(--dim);font-weight:700;text-transform:uppercase;margin-bottom:8px">Rev / Productive Rep / Day</div>
@@ -3895,7 +3954,7 @@ function renderGMD(){try{
   // 5 dimensions: pace vs target, conversion, drop size, attendance rate, touchpoints
   // Pace = actual revenue vs where you SHOULD be given days elapsed (pace-adjusted target)
 
-  const ragHtml = REGIONS.map(function(r){
+  const ragHtml = REGIONS_EXN.map(function(r){
     const rd=rdMap[r];
     const color=RC[r];
 
@@ -3915,12 +3974,12 @@ function renderGMD(){try{
     const dsScore = dsRaw>=3?'grn':dsRaw>=1.5?'amb':'red';
 
     // 4. ATTENDANCE RATE: active reps vs total reps in region (from atte sheets)
-    const totalRepsInRegion = Object.values(D.reps).filter(function(rep){return !rep.isManager && !rep.isVacant && rep.region===r;}).length || rd.attCount;
+    const totalRepsInRegion = repsExN().filter(function(rep){return !rep.isManager && !rep.isVacant && rep.region===r;}).length || rd.attCount;
     const attRate = totalRepsInRegion>0 ? rd.attCount/totalRepsInRegion*100 : 100;
     const attScore = attRate>=85?'grn':attRate>=65?'amb':'red';
 
     // 5. TOUCHPOINTS: outlets visited vs target prorated by days elapsed (KA/SP=120, SR/others=220)
-    const _ragRegReps = Object.values(D.reps).filter(function(rep){return !rep.isManager && !rep.isVacant && rep.region===r;});
+    const _ragRegReps = repsExN().filter(function(rep){return !rep.isManager && !rep.isVacant && rep.region===r;});
     const _ragAvgTgt = _ragRegReps.length
       ? _ragRegReps.reduce(function(s,rep){return s+repOutletTarget(rep.region, rep.code);},0) / _ragRegReps.length
       : repOutletTarget(r);
@@ -3984,7 +4043,7 @@ function renderGMD(){try{
   document.getElementById('gmd-rag').innerHTML=ragHtml;
 
   /* ── CHARTS ── */
-  const dates=Object.keys(D.dailyAll).sort(), dl=dates.map(d=>d.slice(5));
+  const dates=Object.keys(dailyExN()).sort(), dl=dates.map(d=>d.slice(5));
 
   // Table has no Chart.js dependency — build it immediately so it's never at the mercy
   // of an earlier chart call failing (blocked CDN, ad-blocker, etc).
@@ -3994,9 +4053,9 @@ function renderGMD(){try{
     // Drawn FIRST and self-contained (try/catch inside), so a failure in any of the
     // other charts below can't take this one down with it, and vice versa.
     renderWeeklyRevenueChart('c-gmd-weekly');
-    barCh('c-gmd-rev',REGIONS,REGIONS.map(r=>rdMap[r].revenue),REGIONS.map(r=>RC[r]));
-    barCh('c-gmd-cas',REGIONS,REGIONS.map(r=>rdMap[r].cases),REGIONS.map(r=>RC[r]));
-    barCh('c-gmd-con',REGIONS,REGIONS.map(r=>rdMap[r].conv),REGIONS.map(r=>RC[r]));
+    barCh('c-gmd-rev',REGIONS_EXN,REGIONS_EXN.map(r=>rdMap[r].revenue),REGIONS_EXN.map(r=>RC[r]));
+    barCh('c-gmd-cas',REGIONS_EXN,REGIONS_EXN.map(r=>rdMap[r].cases),REGIONS_EXN.map(r=>RC[r]));
+    barCh('c-gmd-con',REGIONS_EXN,REGIONS_EXN.map(r=>rdMap[r].conv),REGIONS_EXN.map(r=>RC[r]));
     lineCh('c-gmd-trend',dl,[
       {label:'NORTH',data:dates.map(d=>D.daily.NORTH?.[d]||0),color:'#00e5a0'},
       {label:'EAST', data:dates.map(d=>D.daily.EAST?.[d] ||0),color:'#a259ff'},
@@ -4008,11 +4067,11 @@ function renderGMD(){try{
   },60);
 
   /* ── ENRICHED SCORECARD ── */
-  document.getElementById('gmd-tbl').innerHTML=REGIONS.map(r=>{
+  document.getElementById('gmd-tbl').innerHTML=REGIONS_EXN.map(r=>{
     const rd=rdMap[r];
     const ds=rd.soldCount>0?(rd.cases/rd.soldCount).toFixed(1)+' cs':'—';
     const regDailyRun=rd.revenue/Math.max(wDaysElapsed,1);
-    const regProj=fm(Math.round(regDailyRun*daysInMth));
+    const regProj=fm(Math.round(regDailyRun*daysTotal));
     return`<tr>
       <td style="color:${RC[r]};font-weight:800;font-family:var(--fn)">${r==='Key Acct'?'KEY ACCT':r}</td>
       <td style="color:var(--grn);font-weight:800">${fm(rd.revenue)}</td>
@@ -4043,7 +4102,7 @@ function renderGMD(){try{
 
     const tv = o.revenue||1;
 
-    const regionCards = REGIONS.map(function(r){
+    const regionCards = REGIONS_EXN.map(function(r){
       const rd    = rdMap[r];
       const color = RC[r];
       const share = (rd.revenue/tv*100).toFixed(1);
@@ -4147,19 +4206,19 @@ function renderGMD(){try{
       const regions=[...new Set(zeroReps.map(function(r){return r.region;}))].join(', ');
       alerts.push({sev:'red',icon:'🚨',title:zeroReps.length+' rep'+(zeroReps.length>1?'s':'')+' in attendance with zero revenue',body:'Regions affected: '+regions+'. Immediate coaching required — these reps are in the field but not converting.',action:'Review route adherence & outlet engagement'});
     }
-    const lowConvRgns=REGIONS.filter(function(r){return rdMap[r].met>0&&rdMap[r].conv<40;}).map(function(r){return r+' ('+rdMap[r].conv.toFixed(0)+'%)';});
+    const lowConvRgns=REGIONS_EXN.filter(function(r){return rdMap[r].met>0&&rdMap[r].conv<40;}).map(function(r){return r+' ('+rdMap[r].conv.toFixed(0)+'%)';});
     if(lowConvRgns.length>0){
       alerts.push({sev:'red',icon:'📉',title:'Critical conversion rate — below 40%',body:lowConvRgns.join(', ')+' converting fewer than 2 in 5 outlets visited. Biggest lever for same-day revenue recovery.',action:'Review call objectives & pitch quality with ASMs'});
     }
     if(!isAccel && !isFlat){
       alerts.push({sev:'amb',icon:'⚠️',title:'Revenue momentum is decelerating',body:'Second-half daily avg is '+fm(Math.round(secondHalfAvg))+' vs first-half '+fm(Math.round(firstHalfAvg))+'. Without intervention the month-end projection may fall short.',action:'Identify what changed in the second half — attendance, routes, or product mix'});
     }
-    const lowDs=REGIONS.filter(function(r){return rdMap[r].soldCount>0&&rdMap[r].cases/rdMap[r].soldCount<1.5;});
+    const lowDs=REGIONS_EXN.filter(function(r){return rdMap[r].soldCount>0&&rdMap[r].cases/rdMap[r].soldCount<1.5;});
     if(lowDs.length>0){
       const dsGapEst = lowDs.reduce(function(s,r){const rd=rdMap[r];const ds=rd.soldCount>0?rd.cases/rd.soldCount:0;const gap=Math.round((1.5-ds)*rd.soldCount);const rpc=rd.cases>0?rd.revenue/rd.cases:0;return s+gap*rpc;},0);
       alerts.push({sev:'amb',icon:'📦',title:'Low drop size in '+lowDs.join(', '),body:'Average cases per customer is below 1.5 — reps are selling but not upselling. Estimated recovery at 1.5 target: '+fm(Math.round(dsGapEst)),action:'Push SKU bundling & stock-loading promotions in these regions'});
     }
-    if(REGIONS.filter(function(r){return rdMap[r].met>0&&rdMap[r].conv<65;}).length===0){
+    if(REGIONS_EXN.filter(function(r){return rdMap[r].met>0&&rdMap[r].conv<65;}).length===0){
       alerts.push({sev:'grn',icon:'✅',title:'All regions above 65% conversion — excellent execution',body:'The entire team is converting more than 2 in 3 outlets visited. Focus shifts to drop size and rep productivity.',action:'Maintain momentum; push volume & SKU breadth'});
     }
     const sevColor={red:'var(--red)',amb:'var(--amb)',grn:'var(--grn)'};
@@ -4181,13 +4240,13 @@ function renderGMD(){try{
 
     /* ── REP PRODUCTIVITY CHARTS ── */
     setTimeout(function(){
-      const rpRgns=REGIONS.filter(function(r){return rdMap[r].attCount>0;});
+      const rpRgns=REGIONS_EXN.filter(function(r){return rdMap[r].attCount>0;});
       barCh('c-gmd-revperrep',rpRgns,rpRgns.map(function(r){return Math.round(rdMap[r].revenue/rdMap[r].attCount);}),rpRgns.map(function(r){return RC[r];}));
       const zeroByRgn={};
       fReps(null).filter(function(r){return r.revenue===0;}).forEach(function(r){zeroByRgn[r.region]=(zeroByRgn[r.region]||0)+1;});
-      stackedBarCh('c-gmd-zerorep',REGIONS,[
-        {label:'With Revenue',data:REGIONS.map(function(r){return Math.max(0,rdMap[r].attCount-(zeroByRgn[r]||0));}),backgroundColor:'rgba(0,229,160,.7)',borderColor:'#00e5a0',borderWidth:1},
-        {label:'Zero Revenue',data:REGIONS.map(function(r){return zeroByRgn[r]||0;}),backgroundColor:'rgba(255,71,87,.7)',borderColor:'#ff4757',borderWidth:1},
+      stackedBarCh('c-gmd-zerorep',REGIONS_EXN,[
+        {label:'With Revenue',data:REGIONS_EXN.map(function(r){return Math.max(0,rdMap[r].attCount-(zeroByRgn[r]||0));}),backgroundColor:'rgba(0,229,160,.7)',borderColor:'#00e5a0',borderWidth:1},
+        {label:'Zero Revenue',data:REGIONS_EXN.map(function(r){return zeroByRgn[r]||0;}),backgroundColor:'rgba(255,71,87,.7)',borderColor:'#ff4757',borderWidth:1},
       ]);
     },100);
   })();
@@ -4229,13 +4288,13 @@ function renderGMDBriefing(){
   const el = document.getElementById('gmd-briefing');
   if(!el || !D) return;
 
-  const I   = D.intel || {}, T = D.targets || {}, ov = D.overall || {};
+  const I   = D.intel || {}, T = tgtExN(), ov = ovExN() || {};
   const dg  = I.workDaysGone || 1, dm = I.workDaysInMonth || 22, dl = I.workDaysLeft || 0;
   const pct = dg / dm;
   const ym  = I.dominantYM || '';
   const mon = ym ? (function(){ var d=new Date(ym+'-01'); return d.toLocaleDateString('en-GB',{month:'long',year:'numeric'}); })() : 'Current Month';
 
-  const allReps    = Object.values(D.reps).filter(function(r){ return !r.isManager && !r.isVacant; });
+  const allReps    = repsExN().filter(function(r){ return !r.isManager && !r.isVacant; });
   const activeReps = allReps.filter(function(r){ return r.revenue>0||r.cases>0; });
   const tgtRev     = T.totalTargetRev||0, tgtCas = T.totalTargetCases||0;
   const totRev     = ov.revenue||0, totCas = ov.cases||0;
@@ -4248,7 +4307,7 @@ function renderGMDBriefing(){
   const drop       = totCas>0 ? totRev/totCas : 0;
   const revGap     = tgtRev>0 ? tgtRev*pct - totRev : 0;
 
-  const rgnData = REGIONS.map(function(r){
+  const rgnData = REGIONS_EXN.map(function(r){
     const rd   = D.regions[r]||{};
     const rRps = allReps.filter(function(x){ return x.region===r; });
     const rTgt = rRps.reduce(function(s,x){return s+(x.targetCases||0);},0);
@@ -4874,7 +4933,7 @@ function renderIntel(){
   const daysTotal = I.workDaysInMonth||23;
   const daysInMth = I.daysInMonth||28;
 
-  const allDataDates   = Object.keys(D.dailyAll).sort();
+  const allDataDates   = Object.keys(dailyExN()).sort();
   const dominantYM     = I.dominantYM || (allDataDates[0]||'').slice(0,7);
   const calDaysInMth   = daysInMth;
 
@@ -4890,14 +4949,14 @@ function renderIntel(){
   const wDaysElapsed = Math.min(daysGone, daysTotal);
   const wDaysLeft    = Math.max(0, daysLeft);
   const dailyRun     = tv / Math.max(wDaysElapsed, 1);
-  const projected    = dailyRun * daysInMth;
-  const projLabel    = wDaysLeft===0 ? 'Month complete — final figure' : 'Run Rate × '+daysInMth+' calendar days';
+  const projected    = dailyRun * daysTotal;  // per-working-day rate × working days in month
+  const projLabel    = wDaysLeft===0 ? 'Month complete — final figure' : 'Run Rate × '+daysTotal+' working days';
 
-  const TI = D.targets || {};
+  const TI = tgtExN();
   // If ASM is active, show that ASM's target; otherwise full month target
   const intelTargetRev = activeASM
     ? (function(){
-        const asmReps = Object.values(D.reps).filter(function(r){return !r.isManager && !r.isVacant && r.asm===activeASM;});
+        const asmReps = repsExN().filter(function(r){return !r.isManager && !r.isVacant && r.asm===activeASM;});
         const cases = asmReps.reduce(function(s,r){return s+(r.targetCases||0);},0);
         return TI.blendedPrice ? Math.round(cases * TI.blendedPrice) : 0;
       })()
@@ -4907,7 +4966,7 @@ function renderIntel(){
     `<div class="kc a"><div class="kc-lbl">Days Gone / Days in Month</div><div class="kc-val c-a">${calDayGone} / ${calDaysInMth}</div><div class="kc-sub">${pctGone.toFixed(0)}% elapsed · ${daysGone} of ${daysTotal} working days (Mon-Sat)</div></div>`
    +`<div class="kc"><div class="kc-lbl">Daily Run Rate</div><div class="kc-val c-g">${fm(Math.round(dailyRun))}</div><div class="kc-sub">Avg revenue per working day</div></div>`
    +tgtCard('Projected Month-End Rev', Math.round(projected), intelTargetRev, {valCls:'c-g', sub:projLabel})
-   +`<div class="kc"><div class="kc-lbl">Revenue / Productive Rep / Day</div><div class="kc-val c-g">${fm(Math.round(dailyRun/Math.max(Object.values(D.reps).filter(r=>r.revenue>0 && !r.isManager && !r.isVacant).length,1)))}</div><div class="kc-sub">Productive reps only (revenue > ₦0)</div></div>`;
+   +`<div class="kc"><div class="kc-lbl">Revenue / Productive Rep / Day</div><div class="kc-val c-g">${fm(Math.round(dailyRun/Math.max(repsExN().filter(r=>r.revenue>0 && !r.isManager && !r.isVacant).length,1)))}</div><div class="kc-sub">Productive reps only (revenue > ₦0)</div></div>`;
 
   /* ── Zero Revenue Reps ── */
   const attReps = fReps(null);
@@ -4969,7 +5028,7 @@ function renderIntel(){
 
   /* ── Brand × Region: TWO separate tables — Revenue and Cases ── */
   (function(){
-    const validRgns     = REGIONS.filter(function(r){ return I.brandByRgn && I.brandByRgn[r]; });
+    const validRgns     = REGIONS_EXN.filter(function(r){ return I.brandByRgn && I.brandByRgn[r]; });
     const brands        = brandsSorted.filter(function(e){ return e[0] !== 'Unknown'; });
     const totalRev      = brands.reduce(function(s,e){return s+e[1].revenue;},0)||1;
     const totalCases    = brands.reduce(function(s,e){return s+e[1].cases;},0)||1;
@@ -5147,7 +5206,7 @@ function renderIntel(){
       BRAND_COLORS);
 
     // Brand stacked by region
-    const validRgns = REGIONS.filter(function(r){return D.intel.brandByRgn[r];});
+    const validRgns = REGIONS_EXN.filter(function(r){return D.intel.brandByRgn[r];});
     stackedBarCh('c-intel-brandrgn', validRgns,
       brandsSorted.slice(0,5).map(function(e,i){
         return {
@@ -5176,7 +5235,7 @@ function renderIntel(){
       }));
 
     // Avg cases per rep by region
-    const atvRgns=REGIONS.filter(function(r){return D.regions[r].attCount>0;});
+    const atvRgns=REGIONS_EXN.filter(function(r){return D.regions[r].attCount>0;});
     barCh('c-intel-atv',
       atvRgns,
       atvRgns.map(function(r){const rd=D.regions[r]; return rd.attCount>0?Math.round(rd.cases/rd.attCount):0;}),
