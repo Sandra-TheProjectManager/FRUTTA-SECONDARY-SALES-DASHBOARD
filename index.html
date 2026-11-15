@@ -3864,9 +3864,11 @@ function renderGMD(){try{
   // outlet visits ARE counted in the team total even though they're hidden in rep lists.
   const _gmdOvAct   = o.met || 0;
   document.getElementById('gmd-kpis').innerHTML=
-    tgtCard('MTD Total Revenue',   o.revenue,        gmdTargetRev,   {valCls:'c-a', cls:'a', sub:'All regions combined'})
-   +tgtCard('Projected Month-End', projected,        gmdTargetRev,   {valCls:'c-g', sub:'Run rate × '+daysTotal+' working days'})
-   +tgtCard('Total Cases',         o.cases,          gmdTargetCases, {valCls:'', sub:'Units sold MTD', isCases:true})
+    tgtCard('MTD Revenue · incl. North', o.revenueAll||0,   o.targetRevAll||0,   {valCls:'c-a', cls:'a', sub:'All regions incl. North manual sellout'})
+   +tgtCard('MTD Revenue · excl. North', o.revenue,         gmdTargetRev,        {valCls:'c-a', sub:'Daily-tracked teams only'})
+   +tgtCard('Projected Month-End',       projected,         gmdTargetRev,        {valCls:'c-g', sub:'Run rate × '+daysTotal+' working days · excl. North'})
+   +tgtCard('Total Cases · incl. North', o.casesAll||0,     o.targetCasesAll||0, {valCls:'', sub:'Units sold MTD incl. North', isCases:true})
+   +tgtCard('Total Cases · excl. North', o.cases,           gmdTargetCases,      {valCls:'', sub:'Units sold MTD, daily-tracked teams', isCases:true})
    +tgtCard('Outlets Visited', _gmdOvAct, _gmdTeamTgt, {valCls:'c-b', isCases:true, sub:'Day '+wDaysElapsed+' pace · 220/rep (120 for KA)'})
    +`<div class="kc b"><div class="kc-lbl">Active Reps</div><div class="kc-val c-b">${o.att}</div><div class="kc-sub">Checked in (incl. zero-rev)</div></div>`
    +`<div class="kc"><div class="kc-lbl">Productive Reps</div><div class="kc-val c-g">${repsExN().filter(r=>r.revenue>0 && !r.isManager && !r.isVacant).length}</div><div class="kc-sub">Reps with revenue > ₦0</div></div>`
